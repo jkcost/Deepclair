@@ -8,9 +8,63 @@ from torch.distributions.normal import Normal
 from model.ASU import ASU
 from model.MSU import MSU
 from model.EIIE import EIIE
-from model.PRED import PRED_PORT
+from model.FED_PRED import FED_PORT
+from model.AUTO_PRED import AUTO_PORT
+from model.INFO_PRED import INFO_PORT
+from model.TRANS_PRED import TRANS_PORT
+
+from torch.optim.lr_scheduler import CyclicLR
+import torch.nn.init as init
+
+from peft import LoraConfig
+from peft import get_peft_config, get_peft_model, LoraConfig, TaskType
 EPS = 1e-20
 
+
+def replace_nan_with_zero_and_report(grad, param_name, param_value):
+    if torch.isnan(grad).any():
+        print(f"Parameter {param_name} with value {param_value.detach()} has NaN gradient!")
+        grad[torch.isnan(grad)] = 0
+    return grad
+
+
+def register_nan_hooks_to_model(model):
+    """
+    Register hooks to model's parameters. If a gradient contains NaN values,
+    they will be replaced with zeros and the parameter's name and value will be reported.
+    """
+    handles = []
+    for name, param in model.named_parameters():
+        if param.requires_grad:  # Check if the parameter requires gradient
+            handle = param.register_hook(lambda grad, name=name, param=param: replace_nan_with_zero_and_report(grad, name, param))
+            handles.append(handle)
+    return handles
+
+
+def lora_get_trainable_parameters_result(lora_module):
+    """
+    Prints the number of trainable parameters in the model.
+    """
+    trainable_params = 0
+    all_param = 0
+    for _, param in lora_module.named_parameters():
+        num_params = param.numel()
+        # if using DS Zero 3 and the weights are initialized empty
+        if num_params == 0 and hasattr(param, "ds_numel"):
+            num_params = param.ds_numel
+
+        all_param += num_params
+        if param.requires_grad:
+            trainable_params += num_params
+    res_dict =  {
+            "trainable params": f"{trainable_params:,d}",
+            "all params": f"{all_param:,d}",
+            "trainable%": f"{100 * trainable_params / all_param}",
+            "print": f"trainable params: {trainable_params:,d} || all params: {all_param:,d} || trainable%: {100 * trainable_params / all_param}"
+
+            }
+
+    return res_dict
 
 
 
@@ -23,9 +77,16 @@ class RLActor(nn.Module):
                              in_features=args.in_features[0],
                              window_len=args.window_len)
         elif args.method == 'PRED':
-            self.pred_port = PRED_PORT(args)
-            self.pred_port.load_state_dict(torch.load(f'./model/checkpoint_{args.pred_len}.pth'))
-            self.pred_port.eval()
+            if args.model =='Fedformer':
+                self.pred_port = FED_PORT(args)
+            elif args.model =='Autoformer':
+                self.pred_port = AUTO_PORT(args)
+            elif args.model == 'Informer':
+                self.pred_port = INFO_PORT(args)
+            elif args.model == 'Transformer':
+                self.pred_port = TRANS_PORT(args)
+            self.pred_port.load_state_dict(torch.load(f'./model/checkpoint_{args.model}_{args.pred_len}_{args.market}.pth'))
+            # self.pred_port.eval()
             self.asu = ASU(num_nodes=args.num_assets,
                            in_features=args.in_features[0],
                            hidden_dim=args.hidden_dim,
@@ -41,6 +102,7 @@ class RLActor(nn.Module):
                 self.msu = MSU(in_features=args.in_features[1],
                                window_len=args.window_len,
                                hidden_dim=args.hidden_dim)
+
         elif args.method =='PRED_MSU':
             self.asu = ASU(num_nodes=args.num_assets,
                            in_features=args.in_features[0],
@@ -52,9 +114,29 @@ class RLActor(nn.Module):
                            supports=supports,
                            spatial_bool=args.spatial_bool,
                            addaptiveadj=args.addaptiveadj)
-            self.msu = PRED_PORT(args)
-            self.msu.load_state_dict(torch.load(f'./model/checkpoint_index_{args.pred_len}.pth'))
-            self.msu.eval()
+
+
+            self.msu_linear = nn.Linear(args.window_len * args.num_assets, 2)
+            init.xavier_uniform_(self.msu_linear.weight)
+
+
+            if args.model =='Fedformer':
+                self.msu = FED_PORT(args)
+            elif args.model =='Autoformer':
+                self.msu = AUTO_PORT(args)
+            elif args.model == 'Informer':
+                self.msu = INFO_PORT(args)
+            elif args.model == 'Transformer':
+                self.msu = TRANS_PORT(args)
+            self.msu.load_state_dict(torch.load(f'./model/checkpoint_{args.model}_{args.pred_len}_{args.market}.pth'))
+
+            if args.train_type =='Lora':
+                lora_regex = r'encoder.attn_layers.\d.attention\.[A-Za-z]+_projection'
+                self.lora_config = LoraConfig(target_modules=lora_regex, lora_dropout=0.1,bias='lora_only',r=args.r)
+                self.msu = get_peft_model(self.msu,self.lora_config)
+                self.msu.print_trainable_parameters()
+                self.res_dict = lora_get_trainable_parameters_result(self.msu)
+
 
 
 
@@ -104,18 +186,23 @@ class RLActor(nn.Module):
             batch_x = torch.from_numpy(x_p[0]).float().to(self.args.device)
             batch_x_mark = torch.from_numpy(x_p[2]).float().to(self.args.device)
             batch_y_mark = torch.from_numpy(x_p[3]).float().to(self.args.device)
-            # decoder input
             batch_y = torch.from_numpy(x_p[1]).float().to(self.args.device)
-            dec_inp = torch.zeros_like(batch_y[:, - self.args.trade_len:, :]).float()
+            # decoder input
+            dec_inp = torch.zeros_like(batch_y[:, - self.args.pred_len:, :]).float()
             dec_inp = torch.cat([batch_y[:, :self.args.label_len, :], dec_inp], dim=1).float().to(self.args.device)
 
-            pred_scores = self.msu(batch_x, batch_x_mark, dec_inp, batch_y_mark).detach().cpu().squeeze(-1) #[batch,pred_len,stock_num]
-            pred_return = ((pred_scores[:,1:] / pred_scores[:,:-1]) -1)
-            pred_scores_ror =  torch.prod((pred_return + 1), axis=-1) - 1
-            sigmoid = nn.Sigmoid()
-            pred_scores = sigmoid(pred_scores_ror)
-            scores = self.asu(x_a,masks)
-            res = pred_scores
+            pred_scores = self.msu(batch_x, batch_x_mark, dec_inp, batch_y_mark).detach() #[batch,pred_len,stock_num]
+
+
+            x = pred_scores.view(pred_scores.shape[0],-1)
+            activation =  nn.LeakyReLU(negative_slope=0.01)
+            x = activation(x)
+            pred_rho = self.msu_linear(x)
+
+            scores = self.asu(x_a, masks)
+            res = pred_rho
+
+
 
         else:
             scores = self.asu(x_a, masks)
@@ -133,7 +220,6 @@ class RLActor(nn.Module):
 
         scores_p = torch.softmax(scores, dim=-1)
 
-        # winners_log_p = torch.log_softmax(winner_scores, dim=-1)
         w_s, w_idx = torch.topk(winner_scores.detach(), self.args.G)
 
         long_ratio = torch.softmax(w_s, dim=-1)
@@ -149,6 +235,21 @@ class RLActor(nn.Module):
         if self.args.method == 'PRED_MSU':
             rho = res
             rho_log_p = None
+            mu = res[...,0]
+            activation= nn.Tanh()
+            mu = activation(mu)
+            sigma = torch.log(1 + torch.exp(res[...,1]))
+            if deterministic:
+                rho = torch.clamp(mu, 0.0, 1.0)
+                rho_log_p = None
+            else:
+                try:
+                    m = Normal(mu, sigma)
+                    sample_rho = m.sample()
+                    rho = torch.clamp(sample_rho, 0.0, 1.0)
+                    rho_log_p = m.log_prob(sample_rho)
+                except:
+                    print()
         else:
             if self.args.msu_bool:
                 mu = res[..., 0]
@@ -175,9 +276,15 @@ class RLAgent():
         self.logger = logger
 
         self.total_steps = 0
-        self.optimizer = torch.optim.Adam(self.actor.parameters(),
+        # Filter out self.msu parameters
+        if args.train_type == 'Frozen':
+            params_to_optimize = [param for name, param in self.actor.named_parameters() if "msu" not in name]
+            self.optimizer = torch.optim.Adam(params_to_optimize, lr=args.lr, weight_decay=args.weight_decay)
+        else:
+            self.optimizer = torch.optim.Adam(self.actor.parameters(),
                                           lr=args.lr,
                                           weight_decay=args.weight_decay)
+        self.scheduler = CyclicLR(self.optimizer,base_lr =self.args.lr ,max_lr =0.000001, cycle_momentum=False)
 
     def train_episode(self):
 
@@ -200,8 +307,7 @@ class RLAgent():
 
         while True:
             steps += 1
-            # if steps == 7:
-            #     print()
+
             x_a = torch.from_numpy(states[0]).to(self.args.device)
             masks = torch.from_numpy(masks).to(self.args.device)
             if self.args.method == 'PRED' or self.args.method == 'PRED_MSU':
@@ -233,7 +339,7 @@ class RLAgent():
             asu_grad = torch.sum(normed_ror * scores_p, dim=-1)
             ###advise
             steps_asu_grad.append(asu_grad)
-            # steps_asu_grad.append(torch.log(asu_grad))
+
 
             agent_wealth = np.concatenate((agent_wealth, info['total_value'][..., None]), axis=1)
             states = next_states
@@ -242,7 +348,7 @@ class RLAgent():
 
             if done:
                 if self.args.method =='PRED_MSU':
-                    steps_log_p_rho = None
+                    steps_log_p_rho = torch.stack(steps_log_p_rho, dim=-1)
                 else:
                     if self.args.msu_bool:
                         steps_log_p_rho = torch.stack(steps_log_p_rho, dim=-1)
@@ -260,10 +366,12 @@ class RLAgent():
                 gradient_asu = torch.stack(steps_asu_grad, dim=1)
 
                 if self.args.method =='PRED_MSU':
-                    loss = - (gradient_asu)
+                    gradient_rho = (rewards_total * steps_log_p_rho)  # Return_version
+                    loss = - (self.args.gamma * gradient_rho + gradient_asu)
                 else:
                     if self.args.msu_bool:
-                        gradient_rho = (rewards_mdd * steps_log_p_rho)
+                        # gradient_rho = (rewards_mdd * steps_log_p_rho) # MDD version
+                        gradient_rho = (rewards_total * steps_log_p_rho) #Return_version
                         loss = - (self.args.gamma * gradient_rho + gradient_asu)
                     else:
                         loss = - (gradient_asu)
@@ -272,17 +380,24 @@ class RLAgent():
                 self.optimizer.zero_grad()
                 loss = loss.contiguous()
                 loss.backward()
-                grad_norm, grad_norm_clip = self.clip_grad_norms(self.optimizer.param_groups, self.args.max_grad_norm)
                 self.optimizer.step()
+
                 break
 
         rtns = (agent_wealth[:, -1] / agent_wealth[:, 0]).mean()
         avg_rho = np.mean(rho_records)
         avg_mdd = mdd.mean()
-        return rtns, avg_rho, avg_mdd,loss
+        return rtns, avg_rho, avg_mdd,loss,rho_records
+
+
+
+
 
     def evaluation(self, logger=None):
-        self.__set_test()
+        if logger =='test':
+            self.__set_test()
+        else:
+            self.__set_eval()
         states, masks = self.env.reset()
         if self.args.method == 'PG':
             self.actor.EIIE.reset(states[0])
@@ -294,7 +409,10 @@ class RLAgent():
         weights_record = {'stock': [],
                           'long_ratio': [],
                           'short_ratio': [],
-                          'stock_return': []}
+                          'stock_return': [],
+                          'avg_return': []}
+
+        future_p_record = []
         while True:
             steps += 1
             x_a = torch.from_numpy(states[0]).to(self.args.device)
@@ -309,9 +427,9 @@ class RLAgent():
             else:
                 x_m = None
 
-            weights, rho, _, _ \
+            weights, rho, _, _\
                 = self.actor(x_a, x_m,x_p, masks, deterministic=True)
-            next_states, rewards, _, masks, done, info = self.env.step(weights, rho.detach().cpu().numpy())
+            next_states, rewards, future_p, masks, done, info = self.env.step(weights, rho.detach().cpu().numpy())
 
             agent_wealth = np.concatenate((agent_wealth, info['total_value'][..., None]), axis=-1)
             rho_record.append(info['p'][0].tolist())
@@ -320,37 +438,25 @@ class RLAgent():
             non_zero_values_long = weights[:,non_zero_indices_long][0]
             non_zero_values_short = weights[:,non_zero_indices_short][0]
             stock_lst = [self.args.stocks[i] for i in non_zero_indices_long.tolist()]
-            weights_record['stock'].append(stock_lst)
+            return_lst = [info['market_fluctuation'][0][i] for i in non_zero_indices_long.tolist()]
+            weights_record['stock'].append(stock_lst +return_lst)
+            future_p_record.append(future_p)
             weights_record['long_ratio'].append(non_zero_values_long.tolist())
             weights_record['short_ratio'].append(non_zero_values_short.tolist())
             weights_record['stock_return'].append(info['market_fluctuation'][0].tolist())
+            weights_record['stock_return'].append(info['market_avg_return'][0].tolist())
             states = next_states
 
             if done:
                 break
 
-        return agent_wealth,rho_record,weights_record
+        return agent_wealth,rho_record,weights_record,future_p_record
 
-    def clip_grad_norms(self, param_groups, max_norm=math.inf):
-        """
-        Clips the norms for all param groups to max_norm
-        :param param_groups:
-        :param max_norm:
-        :return: gradient norms before clipping
-        """
-        grad_norms = [
-            torch.nn.utils.clip_grad_norm_(
-                group['params'],
-                max_norm if max_norm > 0 else math.inf,  # Inf so no clipping but still call to calc
-                norm_type=2
-            )
-            for group in param_groups
-        ]
-        grad_norms_clipped = [min(g_norm, max_norm) for g_norm in grad_norms] if max_norm > 0 else grad_norms
-        return grad_norms, grad_norms_clipped
 
     def __set_train(self):
         self.actor.train()
+        if self.args.method =='PRED_MSU' and self.args.train_type=='Frozen':
+            self.actor.msu.eval()
         self.env.set_train()
 
     def __set_eval(self):

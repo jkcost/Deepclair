@@ -98,8 +98,8 @@ class Dataset_Custom(Dataset):
         self.data_stamp = data_stamp
 
     def __getitem__(self, index):
-        s_begin = index
-        s_end = s_begin + self.seq_len
+        s_begin = index - self.seq_len
+        s_end = index
         r_begin = s_end - self.label_len
         r_end = r_begin + self.label_len + self.pred_len
 

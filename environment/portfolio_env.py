@@ -28,6 +28,9 @@ class DataGenerator():
                  trade_len=7,
                  mode='train',
                  allow_short=True,
+                 seq_len=12,
+                 label_len=5,
+                 pred_len=5,
                  ):
 
         self.assets_features = in_features[0]
@@ -43,6 +46,9 @@ class DataGenerator():
         self.trade_len = trade_len
         self.mode = mode
         self.allow_short = allow_short
+        self.seq_len = seq_len
+        self.label_len = label_len
+        self.pred_len = pred_len
 
         self.__org_assets_data = assets_data.copy()[:, :, :in_features[0]]
         self.__ror_data = rtns_data
@@ -52,10 +58,10 @@ class DataGenerator():
         if allow_short:
             self.__org_market_data = market_data[:, :in_features[1]]
             self.__market_data = self.__org_market_data.copy()
-        ##for meeting
+
         self.train_set_len = self.val_idx - 2 * self.trade_len - window_len + 1 #val_index=7328,trade_len=21, window_len=13
 
-        # self.order_set = np.arange(2483, self.val_idx - 2 * trade_len)
+
         self.order_set = np.arange(5 * (self.window_len + 1) - 1, self.val_idx - 6 * trade_len)
         self.tmp_order = np.array([])
 
@@ -72,7 +78,7 @@ class DataGenerator():
             if self.cursor + self.trade_len >= self.__assets_data.shape[1] - 1:
                 return None, None, None, None, None, None, None, True,None
         obs, market_obs, future_return, past_return = self._get_data()
-        pred_data = self.pred_data()
+        pred_data,pred_done = self.pred_data()
         obs_masks, future_return_masks = self._get_masks(obs, future_return)
         trade_masks = np.logical_or(obs_masks, future_return_masks)
         obs = self._fillna(obs, obs_masks)
@@ -90,11 +96,11 @@ class DataGenerator():
 
         self.cursor += self.trade_len
         if self.val_mode:
-            done = (self.cursor >= self.test_idx)
+            done = (self.cursor >= self.test_idx) or pred_done
         elif self.test_mode:
-            done = (self.cursor >= self.__assets_data.shape[1] - 1)
+            done = (self.cursor >= self.__assets_data.shape[1] - 1) or pred_done
         else:
-            done = ((self.cursor >= self.val_idx).any() or (self.step_cnt >= self.max_steps))
+            done = ((self.cursor >= self.val_idx).any() or (self.step_cnt >= self.max_steps)) or pred_done
         self.step_cnt += 1
 
         obs, obs_normed = obs.astype(np.float32), obs_normed.astype(np.float32)
@@ -131,7 +137,7 @@ class DataGenerator():
 
         ##for meeting
         obs, market_obs, future_return, past_return = self._get_data()
-        pred_data = self.pred_data()
+        pred_data,pred_done = self.pred_data()
         obs_masks, future_return_masks = self._get_masks(obs, future_return)
         trade_masks = np.logical_or(obs_masks, future_return_masks)
         obs = self._fillna(obs, obs_masks)
@@ -148,11 +154,11 @@ class DataGenerator():
 
         self.cursor += self.trade_len
         if self.val_mode:
-            done = (self.cursor >= self.test_idx + 1)
+            done = (self.cursor >= self.test_idx + 1) or pred_done
         elif self.test_mode:
-            done = (self.cursor >= self.__assets_data.shape[1])
+            done = (self.cursor >= self.__assets_data.shape[1]) or pred_done
         else:
-            done = (self.cursor >= self.val_idx).any()
+            done = (self.cursor >= self.val_idx).any() or pred_done
         assert not np.isnan(obs + obs_normed).any()
 
         obs, obs_normed = obs.astype(np.float32), obs_normed.astype(np.float32)
@@ -166,10 +172,10 @@ class DataGenerator():
         return obs, obs_normed, market_obs, market_obs_normed, future_ror, trade_masks, done ,pred_data
 
     def pred_data(self):
-        seq_len = 12
-        label_len = 12
-        pred_len = self.window_len
-
+        seq_len = self.seq_len
+        label_len = self.label_len
+        pred_len = self.pred_len
+        pred_done = False
         df_raw = self.predict_data
         df_raw['date'] = pd.to_datetime(df_raw['date'])
         df_raw.index = df_raw['date']
@@ -179,11 +185,11 @@ class DataGenerator():
 
         df_data = df_raw[cols_data]
         df_data.index= df_raw['date']
-        train_data = df_data[:self.test_idx]
+        train_data = df_data[:self.val_idx - seq_len]
         ##fix
         scaler = StandardScaler()
         scaler.fit(train_data.values)
-        data =scaler.transform(df_data.values)
+        data = scaler.transform(df_data.values)
 
         df_stamp = df_raw[['date']]
         data_stamp = time_features(pd.to_datetime(df_stamp['date'].values), 'd')
@@ -193,20 +199,30 @@ class DataGenerator():
         data_y = df_data.values
         data_index = df_data.index
 
-        seq_x= np.zeros((len(self.cursor), seq_len, df_data.shape[1]))
-        seq_y = np.zeros((len(self.cursor),label_len+pred_len, df_data.shape[1]))
-        seq_x_mark = np.zeros((len(self.cursor), seq_len, 3))
-        seq_y_mark = np.zeros((len(self.cursor), seq_len+pred_len, 3))
+
+        seq_x = []
+        seq_y = []
+        seq_x_mark = []
+        seq_y_mark = []
+        # seq_x= np.zeros((len(self.cursor), seq_len, df_data.shape[1]))
+        # seq_y = np.zeros((len(self.cursor),label_len+pred_len, df_data.shape[1]))
+        # seq_x_mark = np.zeros((len(self.cursor), seq_len, 3))
+        # seq_y_mark = np.zeros((len(self.cursor), seq_len+pred_len, 3))
         for i,idx in enumerate(self.cursor):
-            s_begin = idx
-            s_end = s_begin + seq_len
+
+            s_begin = idx - seq_len
+            s_end = idx
             r_begin = s_end - label_len
-            r_end = r_begin + label_len +  pred_len
-            seq_x[i] =data_x[s_begin:s_end]
-            seq_y[i] = data_x[r_begin:r_end]
-            seq_x_mark[i] = data_stamp[s_begin:s_end]
-            seq_y_mark[i] = data_stamp[r_begin:r_end]
-        return seq_x,seq_y,seq_x_mark,seq_y_mark
+            r_end = r_begin + label_len + pred_len
+            if r_end > len(data_x):
+                pred_done = True
+                break
+            seq_x.append(data_x[s_begin:s_end])
+            seq_y.append(data_x[r_begin:r_end])
+            seq_x_mark.append(data_stamp[s_begin:s_end])
+            seq_y_mark.append(data_stamp[r_begin:r_end])
+
+        return (np.array(seq_x),np.array(seq_y),np.array(seq_x_mark),np.array(seq_y_mark)),pred_done
 
     def _get_data(self):
 
@@ -338,6 +354,8 @@ class PortfolioSim(object):
         """
         # if not self.allow_short:
         #     assert (w0[:, self.num_assets:] == 0).all() and (p==1).all()
+        if  (p < 0.0).all() or (p > 1.0).all():
+            print(f' p error : {p}')
         assert (p >= 0.0).all() and (p <= 1.0).all()
         dw0 = self.w
         dv0 = self.v
@@ -448,6 +466,7 @@ class PortfolioSim(object):
         self.stock = np.zeros((batch_num, self.num_assets))
 
 
+
 class PortfolioEnv(object):
     def __init__(self,
                  assets_data,
@@ -468,6 +487,9 @@ class PortfolioEnv(object):
                  allow_short=True,
                  mode='train',
                  assets_name=None,
+                 seq_len=12,
+                 label_len=5,
+                 pred_len=5
                  ):
 
         self.window_len = window_len
@@ -484,9 +506,11 @@ class PortfolioEnv(object):
         self.src = DataGenerator(assets_data=assets_data, rtns_data=rtns_data, market_data=market_data,predict_data=predict_data,
                                  in_features=in_features, val_idx=val_idx, test_idx=test_idx,
                                  batch_size=batch_size, max_steps=max_steps, norm_type=norm_type,
-                                 window_len=window_len, trade_len=trade_len, mode=mode, allow_short=allow_short)
+                                 window_len=window_len, trade_len=trade_len, mode=mode, allow_short=allow_short,seq_len=seq_len,label_len=label_len,pred_len=pred_len)
 
         self.sim = PortfolioSim(num_assets=self.num_assets, fee=fee, time_cost=time_cost, allow_short=allow_short)
+
+
 
     def step(self, action, p, simulation=False):
         weights = action #action = [batch,2*num_stocks]

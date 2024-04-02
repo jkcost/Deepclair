@@ -22,6 +22,8 @@ class MSU(nn.Module):
         :X: [batch_size(B), window_len(L), in_features(I)]
         :return: Parameters: [batch, 2]
         """
+        if X.shape[0] == 1:
+            self.bn1.eval()
         X = X.permute(1, 0, 2)
 
         outputs, (h_n, c_n) = self.lstm(X)  # lstm version

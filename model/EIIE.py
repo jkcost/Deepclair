@@ -17,14 +17,14 @@ class EIIE(nn.Module):
                                                kernel_size=(1, 2), #layer['filter_shape']
                                                stride=[1,1], #layer['strides']
                                                padding=0),#layer['padding'])
-                                         nn.ReLU(),)
+                                         nn.LeakyReLU(),)
 
 
         self.EIIE_Dense_layer = nn.Sequential(nn.Conv2d( in_channels=hidden_dim,  # you need to specify this according to your network structure
                                                     out_channels= filter_num, #layer["filter_number"]
                                                     kernel_size=(1, window_len-1),  # width is the width of the kernel
                                                     stride=(1, 1),
-                                                    padding=0),nn.ReLU())
+                                                    padding=0),nn.LeakyReLU())
 
 
 

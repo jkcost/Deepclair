@@ -59,6 +59,8 @@ class SpatialAttentionLayer(nn.Module):
         self.bn_w3 = nn.BatchNorm1d(num_features=num_nodes)
         self.bn_w2 = nn.BatchNorm1d(num_features=num_nodes)
 
+        self.naf   = nn.LeakyReLU()
+
     def forward(self, inputs):
         # inputs: (batch, num_features, num_nodes, window_len)
         part1 = inputs.permute(0, 2, 1, 3)
@@ -66,7 +68,11 @@ class SpatialAttentionLayer(nn.Module):
         part1 = self.bn_w1(self.W1(part1).squeeze(-1))
         part1 = self.bn_w2(self.W2(part1))
         part2 = self.bn_w3(self.W3(part2).squeeze(-1)).permute(0, 2, 1)  #
-        S = torch.softmax(self.V(torch.relu(torch.bmm(part1, part2))), dim=-1)
+        # Maven's Fix - Clip the computed scores and replace ReLU with LeakyReLU
+        score = torch.bmm(part1, part2)
+        score = self.V(self.naf(score))
+        score = torch.clip(score, max=10,min=-10)
+        S = torch.softmax(score, dim=-1)
         return S
 
 
@@ -94,7 +100,6 @@ class SAGCN(nn.Module):
         self.bns = nn.ModuleList()
 
         self.supports = supports
-
         # self.start_conv = nn.Conv1d(in_features, hidden_dim, kernel_size=(1, 1)) #infeatures = 6,hidden_dim =128
         self.start_conv = nn.Conv2d(in_features, hidden_dim, kernel_size=(1, 1))   #infeatures = 6,hidden_dim =128
         self.bn_start = nn.BatchNorm2d(hidden_dim)
@@ -130,7 +135,7 @@ class SAGCN(nn.Module):
                                                    out_channels=hidden_dim,
                                                    kernel_size=(1, kernel_size),
                                                    dilation=dilation),
-                                         nn.ReLU(),
+                                         nn.LeakyReLU(),
                                          nn.Dropout(dropout),
                                          nn.BatchNorm2d(hidden_dim))
 
@@ -216,7 +221,7 @@ class LiteTCN(nn.Module):
                                                    kernel_size=kernel_size,
                                                    dilation=dilation),
                                          nn.BatchNorm1d(hidden_size),
-                                         nn.ReLU(),
+                                         nn.LeakyReLU(),
                                          nn.Dropout(dropout),
                                          )
 
@@ -274,9 +279,11 @@ class ASU(nn.Module):
         mask: [batch, num_stock]
         outputs: [batch, scores]
         """
-
+        if inputs.shape[0] == 1:
+            self.sagcn.eval()
         x = self.bn1(self.sagcn(inputs))
         x = self.linear1(x).squeeze(-1)
+        # print(f"MAX: {x.max()} AND MIN: {x.min()}")
         score = 1 / ((-x).exp() + 1)
         score[mask] = -math.inf
         return score
