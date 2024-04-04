@@ -31,8 +31,8 @@ EVALUATION_METRICS = ['max_wealth', 'min_wealth', 'avg_wealth', 'final_wealth', 
 
 
 def run(func_args):
-    if func_args.seed != -1:
-        setup_seed(func_args.seed)
+    # if func_args.seed != -1:
+    setup_seed(func_args.seed)
     if func_args.method =='PG':
         func_args.msu_bool = False
 
@@ -183,6 +183,10 @@ def run(func_args):
                 logger.warning(f'epoch({epoch}) loss -> {epoch_loss}')
                 avg_train_return = epoch_return / mini_batch_num
 
+                wandb_obj.log({'train/loss_epoch': epoch_loss, 
+                               'train/return_epoch': avg_train_return,
+                               'epoch_step': epoch})
+
                 # Validation Step
                 agent_wealth,rho_record,weight_record,future_p = agent.evaluation()
                 metrics = calculate_metrics(agent_wealth, func_args.trade_mode)
@@ -223,7 +227,7 @@ def run(func_args):
 
         #for test
         actor = RLActor(supports, func_args).to(func_args.device)  # define type of network
-        actor.load_state_dict(torch.load(os.path.join(model_save_dir, 'best_arr.pkl')))
+        actor.load_state_dict(torch.load(os.path.join(model_save_dir, 'best_arr.pkl'))['model_state_dict'])
         logger.warning("Successfully loaded best checkpoint...")
         agent = RLAgent(env, actor, func_args)
         agent_wealth, rho_record, weight_record, future_p = agent.evaluation('test')
