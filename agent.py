@@ -20,6 +20,8 @@ from peft import LoraConfig
 from peft import get_peft_config, get_peft_model, LoraConfig, TaskType
 EPS = 1e-20
 
+import pdb
+
 
 def replace_nan_with_zero_and_report(grad, param_name, param_value):
     if torch.isnan(grad).any():
@@ -136,9 +138,6 @@ class RLActor(nn.Module):
                 self.msu = get_peft_model(self.msu,self.lora_config)
                 self.msu.print_trainable_parameters()
                 self.res_dict = lora_get_trainable_parameters_result(self.msu)
-
-
-
 
         else:
             self.asu = ASU(num_nodes=args.num_assets,
@@ -284,7 +283,7 @@ class RLAgent():
             self.optimizer = torch.optim.Adam(self.actor.parameters(),
                                           lr=args.lr,
                                           weight_decay=args.weight_decay)
-        self.scheduler = CyclicLR(self.optimizer,base_lr =self.args.lr ,max_lr =0.000001, cycle_momentum=False)
+        self.scheduler = CyclicLR(self.optimizer, base_lr=self.args.lr ,max_lr=self.args.lr*100, cycle_momentum=False)
 
     def train_episode(self):
 
@@ -320,8 +319,6 @@ class RLAgent():
                 x_m = torch.from_numpy(states[1]).to(self.args.device)
             else:
                 x_m = None
-
-
 
             weights, rho, scores_p, log_p_rho \
                 = self.actor(x_a, x_m,x_p, masks, deterministic=False)
@@ -381,7 +378,6 @@ class RLAgent():
                 loss = loss.contiguous()
                 loss.backward()
                 self.optimizer.step()
-
                 break
 
         rtns = (agent_wealth[:, -1] / agent_wealth[:, 0]).mean()

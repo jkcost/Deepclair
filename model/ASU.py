@@ -2,13 +2,14 @@ import math
 
 import torch
 import torch.nn as nn
-
+import pdb
 
 class nconv(nn.Module):
     def __init__(self):
         super(nconv, self).__init__()
 
     def forward(self, x, A):
+        # import pdb; pdb.set_trace()
         x = torch.einsum('ncvl,vw->ncwl', (x, A))
         return x.contiguous()
 
@@ -284,7 +285,8 @@ class ASU(nn.Module):
         x = self.bn1(self.sagcn(inputs))
         x = self.linear1(x).squeeze(-1)
         # print(f"MAX: {x.max()} AND MIN: {x.min()}")
-        score = 1 / ((-x).exp() + 1)
+        score = 1 / ((-torch.clamp(x, max=50,min=-50)).exp() + 1)
+        
         score[mask] = -math.inf
         return score
 

@@ -1,0 +1,8 @@
+*pycache*
+*outputs*
+*data*
+__pycache__/
+data/
+outputs/
+*wandb*
+wandb/

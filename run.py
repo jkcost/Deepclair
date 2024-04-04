@@ -13,6 +13,8 @@ from utils.parse_config import ConfigParser
 from utils.functions import *
 from agent import *
 from environment.portfolio_env import PortfolioEnv
+import pdb
+import setproctitle
 
 os.environ['CUDA_LAUNCH_BLOCKING'] = "1"
 torch.autograd.set_detect_anomaly(True)
@@ -25,8 +27,7 @@ os.environ['OPENBLAS_NUM_THREADS'] = "1"
 
 import wandb
 
-
-
+EVALUATION_METRICS = ['max_wealth', 'min_wealth', 'avg_wealth', 'final_wealth', 'ARR', 'ASR', 'AVOL', 'MDD', 'CR', 'DDR', 'long_ratio', 'short_ratio']
 
 
 def run(func_args):
@@ -49,56 +50,30 @@ def run(func_args):
 
     start_time = datetime.now().strftime('%m%d/%H%M%S')
 
-    wandb_obj = wandb.init(config=func_args, project='DeepClairDebug', name='dev_mode')
-
+    wandb_obj = wandb.init(config=func_args, 
+                           project=func_args.wandb_project_name, 
+                           group=func_args.wandb_group_name,
+                           name=func_args.wandb_session_name)
     wandb_obj.define_metric('batch_step')
-
-    wandb_obj.define_metric('train/loss', step_metric='batch_step')
-
+    wandb_obj.define_metric('train/loss',       step_metric='batch_step')
     wandb_obj.define_metric('epoch_step')
+    wandb_obj.define_metric('train/return',     step_metric='batch_step')
+    wandb_obj.define_metric('train/avg_rho',    step_metric='batch_step')
+    wandb_obj.define_metric('train/avg_mdd',    step_metric='batch_step')
+    for split in ['train', 'valid', 'test']:
+        for metric in EVALUATION_METRICS:
+            wandb_obj.define_metric(f'{split}/{metric}', step_metric='epoch_step')
+    WANDB_NAME = f'{func_args.wandb_project_name}_{func_args.wandb_group_name}_{func_args.wandb_session_name}'
+    setproctitle.setproctitle(WANDB_NAME)
 
-    wandb_obj.define_metric('train/avg_return', step_metric='epoch_step')
-
-    wandb_obj.define_metric('train/avg_rho', step_metric='epoch_step')
-
-    wandb_obj.define_metric('train/avg_mdd', step_metric='epoch_step')
-
-    wandb_obj.define_metric('test/apr', step_metric='epoch_step')
-
-    wandb_obj.define_metric('test/mdd', step_metric='epoch_step')
-
-    wandb_obj.define_metric('test/avol', step_metric='epoch_step')
-
-    wandb_obj.define_metric('test/asr', step_metric='epoch_step')
-
-    wandb_obj.define_metric('test/sor', step_metric='epoch_step')
-
-    wandb_obj.define_metric('test/cr', step_metric='epoch_step')
-
-    wandb_obj.define_metric('test/min_wealth', step_metric='epoch_step')
-
-    wandb_obj.define_metric('test/max_wealth', step_metric='epoch_step')
-
-    wandb_obj.define_metric('test/avg_wealth', step_metric='epoch_step')
-
-    wandb_obj.define_metric('test/final_wealth', step_metric='epoch_step')
-
-    wandb_obj.define_metric('test/stock_lst', step_metric='epoch_step')
-
-    wandb_obj.define_metric('test/long_ratio', step_metric='epoch_step')
-
-    wandb_obj.define_metric('test/short_ratio', step_metric='epoch_step')
-
-    wandb_obj.define_metric('test/trade_len_stock_return', step_metric='epoch_step')
 
     if func_args.mode == 'train':
-        PREFIX =  'outpus/'
-        PREFIX = os.path.join(PREFIX,start_time)
+        PREFIX =  'outputs/'
+        PREFIX = os.path.join(PREFIX,WANDB_NAME+'_'+start_time)
         PREFIX = PREFIX+'('+func_args.train_type+')' + '_'+func_args.exp_num+'_' +func_args.market+ '_'+func_args.model+'_' +'_r'+'('+str(func_args.r)+')'
         img_dir = os.path.join(PREFIX,'img_file')
         save_dir = os.path.join(PREFIX,'log_file')
         model_save_dir = os.path.join(PREFIX,'model_file')
-
 
         if not os.path.isdir(save_dir):
             os.makedirs(save_dir)
@@ -133,8 +108,6 @@ def run(func_args):
 
         logger.addHandler(chlr)
         logger.addHandler(fhlr)
-
-
 
         if func_args.market == 'DJIA':
             stocks_data = np.load(data_prefix + 'stocks_data.npy')
@@ -182,185 +155,102 @@ def run(func_args):
             logger.warning(actor.res_dict)
         # wandb_obj.watch(actor, log='all', log_graph=True, log_freq=10)
         mini_batch_num = int(np.ceil(len(env.src.order_set) / func_args.batch_size))
+        wandb_obj.watch(actor, log='all', log_graph=True, log_freq=10)
 
 
+        logger.warning('Start training!!!')
         try:
             max_ARR = 0
             no_improve_epoch = 0
             MAX_NO_IMPROVE_EPOCH = 10
             for epoch in range(func_args.epochs):
+                # Train Step
                 epoch_return = 0
                 epoch_loss = 0
-                # for j in tqdm(range(mini_batch_num)):
                 for j in range(mini_batch_num):
-                    if j == 107:
-                        print()
-
-                    episode_return, avg_rho, avg_mdd,loss,rho_record_train = agent.train_episode()
+                    episode_return, avg_rho, avg_mdd, loss, rho_record_train = agent.train_episode()
                     epoch_return += episode_return
                     epoch_loss += loss
-                    wandb_obj.log({'train/loss': epoch_loss})
+                    wandb_obj.log({'train/loss': loss, 
+                                   'train/return': episode_return,
+                                   'train/avg_rho': avg_rho, 
+                                   'train/avg_mdd': avg_mdd, 
+                                   'batch_step': j + epoch*mini_batch_num})
                     agent.scheduler.step()
-
-
 
                 current_lr = agent.optimizer.param_groups[0]['lr']
                 logger.warning(f"Epoch {epoch}, Current Learning Rate: {current_lr}")
                 logger.warning(f'epoch({epoch}) loss -> {epoch_loss}')
                 avg_train_return = epoch_return / mini_batch_num
-                logger.warning('[%s]round %d, avg train return %.4f, avg rho %.4f, avg mdd %.4f' %
-                               (start_time, epoch, avg_train_return, avg_rho, avg_mdd))
+
+                # Validation Step
                 agent_wealth,rho_record,weight_record,future_p = agent.evaluation()
                 metrics = calculate_metrics(agent_wealth, func_args.trade_mode)
-                writer.add_scalar('Test/ARR', metrics['ARR'], global_step=epoch)
-                writer.add_scalar('Test/MDD', metrics['MDD'], global_step=epoch)
-                writer.add_scalar('Test/AVOL', metrics['AVOL'], global_step=epoch)
-                writer.add_scalar('Test/ASR', metrics['ASR'], global_step=epoch)
-                writer.add_scalar('Test/SoR', metrics['DDR'], global_step=epoch)
-                writer.add_scalar('Test/CR', metrics['CR'], global_step=epoch)
-                logger.warning('after training %d round, max wealth: %.4f, min wealth: %.4f,'
-                              ' avg wealth: %.4f, final wealth: %.4f, ARR: %.3f%%, ASR: %.3f, AVol" %.3f,'
-                              'MDD: %.2f%%, CR: %.3f, DDR: %.3f'
-                              % (
-                                  epoch, max(agent_wealth[0]), min(agent_wealth[0]), np.mean(agent_wealth),
-                                  agent_wealth[-1, -1], 100 * metrics['ARR'], metrics['ASR'], metrics['AVOL'],
-                                  100 * metrics['MDD'], metrics['CR'], metrics['DDR']
-                              ))
+                for k, v in metrics.items():
+                    if k in EVALUATION_METRICS:
+                        if 'wealth' not in k:
+                            wandb_obj.log({f'valid/{k}': v,                     'epoch_step': epoch})
+                        if k == 'min_wealth':
+                            wandb_obj.log({f'valid/{k}': np.min(agent_wealth),  'epoch_step': epoch})
+                        if k == 'max_wealth':
+                            wandb_obj.log({f'valid/{k}': np.max(agent_wealth),  'epoch_step': epoch})
+                        if k == 'avg_wealth':
+                            wandb_obj.log({f'valid/{k}': np.mean(agent_wealth), 'epoch_step': epoch})
+                        if k == 'final_wealth':
+                            wandb_obj.log({f'valid/{k}': agent_wealth[-1, -1],  'epoch_step': epoch})
+
                 if metrics['ARR'] > max_ARR :
                     logger.warning(f'New Best ARR Policy in {epoch}!!!!')
-                    logger.warning(f'rho_record_train:{rho_record_train[:500]}')
-                    logger.warning(f'rho_record:{rho_record}')
                     no_improve_epoch = 0
                     invest_record = json.dumps(weight_record)
-
                     max_ARR = metrics['ARR']
-
+                    save_dict = {'model_state_dict': actor.state_dict(), 'epoch': epoch, 'loss': epoch_loss}
                     record_path = os.path.join(save_dir,'invest_record.json')
                     with open(record_path, 'w') as f:
                         json.dump(invest_record, f, indent=4)
-                    torch.save(actor, os.path.join(model_save_dir, 'best_cr.pkl'))
-
+                    torch.save(save_dict, os.path.join(model_save_dir, 'best_arr.pkl'))
                 else:
                     no_improve_epoch +=1
-
-
                 if no_improve_epoch >= MAX_NO_IMPROVE_EPOCH and epoch < 50:
                     logger.warning('!!!!!!!!!!!!!!!policy reset !!!!!!!!')
                     agent.actor = RLActor(supports, func_args).to(func_args.device)
 
-            test_record = {'max_wealth' :[],
-                           'min_wealth' :[],
-                           'avg_wealth' :[],
-                           'final_wealth':[],
-                           'ARR':[],
-                           'ASR':[],
-                           'AVOL':[],
-                           'MDD':[],
-                           'CR':[],
-                           'DDR':[]}
-            test_record['max_wealth'].append(max(agent_wealth[0]))
-            test_record['min_wealth'].append(min(agent_wealth[0]))
-            test_record['avg_wealth'].append(np.mean(agent_wealth[0]))
-            test_record['final_wealth'].append((agent_wealth[-1, -1]))
-            test_record['ARR'].append(100 * metrics['ARR'])
-            test_record['ASR'].append(metrics['ASR'])
-            test_record['AVOL'].append(metrics['AVOL'])
-            test_record['MDD'].append(100 * metrics['MDD'])
-            test_record['CR'].append(metrics['CR'])
-            test_record['DDR'].append(metrics['DDR'])
-
-
-            close_prices = index_data[index_data['date'] >= func_args.test_period]['Adj Close'].values
-            index_agent_wealth = np.cumprod(1 + np.diff(close_prices) / close_prices[:-1])
-            index_agent_wealth = np.insert(index_agent_wealth, 0, 1)
-            index_agent_wealth = index_agent_wealth[np.newaxis, :]
-            index_metrics = calculate_metrics(index_agent_wealth,trade_mode='D')
-
-
-
-
-            logger.warning('test record : max wealth: %.4f, min wealth: %.4f,'
-                           ' avg wealth: %.4f, final wealth: %.4f, ARR: %.3f%%, ASR: %.3f, AVol" %.3f,'
-                           'MDD: %.2f%%, CR: %.3f, DDR: %.3f'
-                           % (
-                             np.mean(test_record['max_wealth']), np.mean(test_record['min_wealth']),
-                               np.mean(test_record['avg_wealth']),
-                               np.mean(test_record['final_wealth']), np.mean(test_record['ARR']),np.mean(test_record['ASR']), np.mean(test_record['AVOL']),
-                               np.mean(test_record['MDD']),np.mean(test_record['CR']), np.mean(test_record['DDR'])
-                           ))
-
-
-
-
-            logger.warning('index_record:  max wealth: %.4f, min wealth: %.4f,'
-                           ' avg wealth: %.4f, final wealth: %.4f, ARR: %.3f%%, ASR: %.3f, AVol" %.3f,'
-                           'MDD: %.2f%%, CR: %.3f, DDR: %.3f'
-                           % (
-                                max(index_agent_wealth[0]), min(index_agent_wealth[0]),
-                               np.mean(index_agent_wealth),
-                               index_agent_wealth[-1, -1], 100 * index_metrics['ARR'], index_metrics['ASR'], index_metrics['AVOL'],
-                               100 * index_metrics['MDD'], index_metrics['CR'], index_metrics['DDR']
-                           ))
-            values = [
-                np.mean(test_record['max_wealth']),
-                np.mean(test_record['min_wealth']),
-                np.mean(test_record['avg_wealth']),
-                np.mean(test_record['final_wealth']),
-                np.mean(test_record['ARR']),
-                np.mean(test_record['ASR']),
-                np.mean(test_record['AVOL']),
-                np.mean(test_record['MDD']),
-                np.mean(test_record['CR']),
-                np.mean(test_record['DDR'])
-            ]
-
-
-            logger.warning(', '.join(map(str, values)))
-
-            #for test
-
-            agent_wealth, rho_record, weight_record, future_p = agent.evaluation('test')
-            metrics = calculate_metrics(agent_wealth, func_args.trade_mode)
-            logger.warning('last model metrics:')
-            logger.warning(' %.4f, %.4f, %.4f, %.4f,%.3f,  %.3f, %.3f, %.2f, %.3f, %.3f'
-                           % (max(agent_wealth[0]), min(agent_wealth[0]),
-                               np.mean(agent_wealth),
-                               agent_wealth[-1, -1], 100 * metrics['ARR'], metrics['ASR'], metrics['AVOL'],
-                               100 * metrics['MDD'], metrics['CR'], metrics['DDR']
-                           ))
-
-            torch.save(actor, os.path.join(model_save_dir, 'last_model-' + str(epoch) + '.pkl'))
-            np.save(img_dir + f'/last_agent_wealth_{func_args.exp_num}.npy', agent_wealth)
-            np.save(img_dir+f'/last_rho_record.npy_{func_args.exp_num}',np.array(rho_record))
-            wandb_obj.log({'test/apr': metrics['APR'], 'epoch_step': epoch})
-
-            wandb_obj.log({'test/mdd': metrics['MDD'], 'epoch_step': epoch})
-
-            wandb_obj.log({'test/avol': metrics['AVOL'], 'epoch_step': epoch})
-
-            wandb_obj.log({'test/asr': metrics['ASR'], 'epoch_step': epoch})
-
-            wandb_obj.log({'test/sor': metrics['DDR'], 'epoch_step': epoch})
-
-            wandb_obj.log({'test/cr': metrics['CR'], 'epoch_step': epoch})
-
-            wandb_obj.log({'test/min_wealth': min(agent_wealth[0]), 'epoch_step': epoch})
-
-            wandb_obj.log({'test/max_wealth': max(agent_wealth[0]), 'epoch_step': epoch})
-
-            wandb_obj.log({'test/avg_wealth': np.mean(agent_wealth), 'epoch_step': epoch})
-
-            wandb_obj.log({'test/final_wealth': agent_wealth[-1, -1], 'epoch_step': epoch})
-
-
-
         except KeyboardInterrupt:
-            torch.save(actor, os.path.join(model_save_dir, 'final_model.pkl'))
+            logger.warning('End of training...????')
+            save_dict = {'model_state_dict': actor.state_dict(), 'epoch': epoch, 'loss': epoch_loss}
+            torch.save(save_dict, os.path.join(model_save_dir, 'final_model.pkl'))
             torch.save(agent.optimizer.state_dict(), os.path.join(model_save_dir, 'final_optimizer.pkl'))
+
+        #for test
+        actor = RLActor(supports, func_args).to(func_args.device)  # define type of network
+        actor.load_state_dict(torch.load(os.path.join(model_save_dir, 'best_arr.pkl')))
+        logger.warning("Successfully loaded best checkpoint...")
+        agent = RLAgent(env, actor, func_args)
+        agent_wealth, rho_record, weight_record, future_p = agent.evaluation('test')
+        metrics = calculate_metrics(agent_wealth, func_args.trade_mode)
+        for k, v in metrics.items():
+            if k in EVALUATION_METRICS:
+                if 'wealth' not in k:
+                    wandb_obj.log({f'test/{k}': v, 'epoch_step': epoch})
+                if k == 'min_wealth':
+                    wandb_obj.log({f'test/{k}': np.min(agent_wealth), 'epoch_step': epoch})
+                if k == 'max_wealth':
+                    wandb_obj.log({f'test/{k}': np.max(agent_wealth),  'epoch_step': epoch})
+                if k == 'avg_wealth':
+                    wandb_obj.log({f'test/{k}': np.mean(agent_wealth), 'epoch_step': epoch})
+                if k == 'final_wealth':
+                    wandb_obj.log({f'test/{k}': agent_wealth[-1, -1],  'epoch_step': epoch})
+        np.save(img_dir + f'/last_agent_wealth_{func_args.exp_num}.npy', agent_wealth)
+        np.save(img_dir+f'/last_rho_record.npy_{func_args.exp_num}',np.array(rho_record))
+
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
+    parser.add_argument('--wandb_project_name', '-wpn', type=str, default='CIKM2024-DeepClair')
+    parser.add_argument('--wandb_group_name',   '-wgn', type=str, default='Debugging Mode')
+    parser.add_argument('--wandb_session_name', '-wsn', type=str, default='Debugging Mode')
+
     parser.add_argument('-c', '--config', type=str)
     parser.add_argument('--r', type=int, default=10)
     parser.add_argument('--method', type=str, default='PRED_MSU')
@@ -376,11 +266,13 @@ if __name__ == '__main__':
     parser.add_argument('--seed', type=int, default=-1)
     parser.add_argument('--exp_num', type=str, default='1')
     parser.add_argument('--lr', type=float)
+    parser.add_argument('--weight_decay', type=float)
+    parser.add_argument('--tau', type=float)
     parser.add_argument('--gamma', type=float)
-    parser.add_argument('--no_spatial', dest='spatial_bool', action='store_false')
+    parser.add_argument('--no_spatial', dest='spatial_bool', action='store_false', default=False)
     parser.add_argument('--no_msu', dest='msu_bool', action='store_false')
     parser.add_argument('--relation_file', type=str)
-    parser.add_argument('--addaptiveadj', dest='addaptive_adj_bool', action='store_false')
+    parser.add_argument('--addaptiveadj', dest='addaptive_adj_bool', action='store_false', default=False)
     parser.add_argument('--stocks', type=str, nargs='+',
                         default=['UNH', 'HD', 'MCD', 'MSFT', 'AMGN', 'CAT', 'BA', 'HON', 'CVX', 'TRV', 'JNJ', 'AAPL',
                                  'AXP', 'PG', 'WMT', 'JPM', 'IBM', 'NKE', 'MRK', 'MMM', 'DIS', 'KO', 'CSCO', 'VZ',

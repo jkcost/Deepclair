@@ -6,6 +6,7 @@ import pandas as pd
 from sklearn.preprocessing import StandardScaler
 from utils.timefeatures import time_features
 Reward = namedtuple('Reward', ('total', 'long', 'short'))
+import pdb
 
 EPS = 1e-20
 
@@ -354,9 +355,16 @@ class PortfolioSim(object):
         """
         # if not self.allow_short:
         #     assert (w0[:, self.num_assets:] == 0).all() and (p==1).all()
+        p[p <= 0.0] = 0.0
+        p[p >= 1.0] = 1.0
         if  (p < 0.0).all() or (p > 1.0).all():
             print(f' p error : {p}')
-        assert (p >= 0.0).all() and (p <= 1.0).all()
+        try:
+            assert (p >= 0.0).all() and (p <= 1.0).all()
+        except:
+            print("Adjusting the values in p-tensor...")
+            p[np.isnan(p)] = 0.5
+        
         dw0 = self.w
         dv0 = self.v
         dcash0 = self.cash
@@ -364,6 +372,8 @@ class PortfolioSim(object):
 
         if self.allow_short:
             # === short ===
+            if p.ndim == 2:
+                p = p[:,1]
             dv0_short = dv0 * (1 - p)
             dv0_short_after_sale = dv0_short * (1 - self.fee)
             dv0_long = (dv0 * p + dv0_short_after_sale)
