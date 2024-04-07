@@ -191,17 +191,16 @@ def run(func_args):
                 agent_wealth,rho_record,weight_record,future_p = agent.evaluation()
                 metrics = calculate_metrics(agent_wealth, func_args.trade_mode)
                 for k, v in metrics.items():
-                    if k in EVALUATION_METRICS:
-                        if 'wealth' not in k:
-                            wandb_obj.log({f'valid/{k}': v,                     'epoch_step': epoch})
-                        if k == 'min_wealth':
-                            wandb_obj.log({f'valid/{k}': np.min(agent_wealth),  'epoch_step': epoch})
-                        if k == 'max_wealth':
-                            wandb_obj.log({f'valid/{k}': np.max(agent_wealth),  'epoch_step': epoch})
-                        if k == 'avg_wealth':
-                            wandb_obj.log({f'valid/{k}': np.mean(agent_wealth), 'epoch_step': epoch})
-                        if k == 'final_wealth':
-                            wandb_obj.log({f'valid/{k}': agent_wealth[-1, -1],  'epoch_step': epoch})
+                    wandb_obj.log({f'valid/{k}': v, 'epoch_step': epoch})
+                if k in EVALUATION_METRICS:
+                    if k == 'min_wealth':
+                        wandb_obj.log({f'valid/{k}': np.min(agent_wealth),  'epoch_step': epoch})
+                    if k == 'max_wealth':
+                        wandb_obj.log({f'valid/{k}': np.max(agent_wealth),  'epoch_step': epoch})
+                    if k == 'avg_wealth':
+                        wandb_obj.log({f'valid/{k}': np.mean(agent_wealth), 'epoch_step': epoch})
+                    if k == 'final_wealth':
+                        wandb_obj.log({f'valid/{k}': agent_wealth[-1, -1],  'epoch_step': epoch})
 
                 if metrics['ARR'] > max_ARR :
                     logger.warning(f'New Best ARR Policy in {epoch}!!!!')
@@ -232,6 +231,19 @@ def run(func_args):
         agent = RLAgent(env, actor, func_args)
         agent_wealth, rho_record, weight_record, future_p = agent.evaluation('test')
         metrics = calculate_metrics(agent_wealth, func_args.trade_mode)
+
+        for k, v in metrics.items():
+            wandb_obj.log({f'test/{k}': v, 'epoch_step': epoch})
+        if k in EVALUATION_METRICS:
+            if k == 'min_wealth':
+                wandb_obj.log({f'test/{k}': np.min(agent_wealth),  'epoch_step': epoch})
+            if k == 'max_wealth':
+                wandb_obj.log({f'test/{k}': np.max(agent_wealth),  'epoch_step': epoch})
+            if k == 'avg_wealth':
+                wandb_obj.log({f'test/{k}': np.mean(agent_wealth), 'epoch_step': epoch})
+            if k == 'final_wealth':
+                wandb_obj.log({f'test/{k}': agent_wealth[-1, -1],  'epoch_step': epoch})
+
         for k, v in metrics.items():
             if k in EVALUATION_METRICS:
                 if 'wealth' not in k:
