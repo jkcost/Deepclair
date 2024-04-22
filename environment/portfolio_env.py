@@ -252,6 +252,8 @@ class DataGenerator():
             if tmp_states.shape[-1] == 6:
                 assets_states[i, :, :, 5] = np.nanmean(tmp_states[i, :, 1:, :, 5], axis=-1)
             if self.allow_short:
+                if idx ==self.__market_data.shape[0]:
+                    print()
                 tmp_states = self.__market_data[idx - (self.window_len) * 5 + 1:idx + 1].reshape(self.window_len, 5, -1)
                 market_states[i] = np.mean(tmp_states, axis=1)
             future_return[i] = self.__ror_data[:, idx + 1:min(idx + 1 + self.trade_len, self.__ror_data.shape[-1])]
@@ -372,15 +374,13 @@ class PortfolioSim(object):
 
         if self.allow_short:
             # === short ===
-            if p.ndim == 2:
-                p = p[:,1]
             dv0_short = dv0 * (1 - p)
             dv0_short_after_sale = dv0_short * (1 - self.fee)
             dv0_long = (dv0 * p + dv0_short_after_sale)
 
             dw0_long = dw0 * ((dv0 * p) / dv0_long)[..., None]
-            dw0_long_sale = np.clip((dw0_long - w0[:, :self.num_assets]), 0., 1.)
 
+            dw0_long_sale = np.clip((dw0_long - w0[:, :self.num_assets]), 0., 1.)
             mu0_long = dw0_long_sale.sum(axis=-1) * self.fee
             dw1 = (ror * w0[:, :self.num_assets]) / np.sum(ror * w0[:, :self.num_assets], axis=-1, keepdims=True)
 

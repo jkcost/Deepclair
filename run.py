@@ -11,6 +11,7 @@ from torch.utils.tensorboard import SummaryWriter
 
 from utils.parse_config import ConfigParser
 from utils.functions import *
+from utils.functions import EarlyStopping
 from agent import *
 from environment.portfolio_env import PortfolioEnv
 import pdb
@@ -31,8 +32,8 @@ EVALUATION_METRICS = ['max_wealth', 'min_wealth', 'avg_wealth', 'final_wealth', 
 
 
 def run(func_args):
-    # if func_args.seed != -1:
-    setup_seed(func_args.seed)
+    if func_args.seed != -1:
+        setup_seed(func_args.seed)
     if func_args.method =='PG':
         func_args.msu_bool = False
 
@@ -60,6 +61,9 @@ def run(func_args):
     wandb_obj.define_metric('train/return',     step_metric='batch_step')
     wandb_obj.define_metric('train/avg_rho',    step_metric='batch_step')
     wandb_obj.define_metric('train/avg_mdd',    step_metric='batch_step')
+    wandb_obj.define_metric('train/loss_epoch', step_metric='epoch_step')
+    wandb_obj.define_metric('train/return_epoch', step_metric='epoch_step')
+
     for split in ['train', 'valid', 'test']:
         for metric in EVALUATION_METRICS:
             wandb_obj.define_metric(f'{split}/{metric}', step_metric='epoch_step')
@@ -113,11 +117,12 @@ def run(func_args):
             stocks_data = np.load(data_prefix + 'stocks_data.npy')
             logger.debug(f'stocks_data.shape:{stocks_data.shape}')
             rate_of_return = np.load(data_prefix + 'ror.npy')
-            market_history = np.load(data_prefix + 'market_data.npy')
+            # market_history = np.load(data_prefix + 'market_data.npy')
             predict_data= pd.read_csv(data_prefix+'DJI_stocks.csv')
             predict_data['date'] = pd.to_datetime(predict_data['date'])
             index_data = pd.read_csv(data_prefix + '^DJI.csv')
             index_data['date'] = pd.to_datetime(index_data['date'])
+            market_history = np.array(index_data[['Open', 'High', 'Low', 'Adj Close']])
             val_idx = index_data[index_data['date'] < func_args.valid_period].index[-1]
             test_idx = index_data[index_data['date'] <= func_args.test_period].index[-1]
             logger.warning(f"test date -> {index_data.iloc[test_idx]['Date']}")
@@ -129,17 +134,36 @@ def run(func_args):
             stocks_data = np.load(data_prefix + 'stocks_data.npy')
             logger.debug(f'stocks_data.shape:{stocks_data.shape}')
             rate_of_return = np.load(data_prefix + 'ror.npy')
-            market_history = np.load(data_prefix + 'market_data.npy')
+            # market_history = np.load(data_prefix + 'market_data.npy')
             predict_data = pd.read_csv(data_prefix + 'IXIC_stocks.csv')
             predict_data['date'] = pd.to_datetime(predict_data['date'])
             index_data = pd.read_csv(data_prefix + '^IXIC.csv')
             index_data['date'] = pd.to_datetime(index_data['date'])
+            market_history = np.array(index_data[['Open','High','Low','Adj Close']])
             val_idx = index_data[index_data['date'] < func_args.valid_period].index[-1]
             test_idx = index_data[index_data['date'] <= func_args.test_period].index[-1]
             logger.warning(f"test date -> {index_data.iloc[test_idx]['Date']}")
             assert stocks_data.shape[:-1] == rate_of_return.shape, 'file size error'
             A = torch.from_numpy(np.load(matrix_path)).float().to(func_args.device)
             allow_short = True
+
+        elif func_args.market == 'KOSPI':
+            stocks_data = np.load(data_prefix + 'stocks_data.npy')
+            logger.debug(f'stocks_data.shape:{stocks_data.shape}')
+            rate_of_return = np.load(data_prefix + 'ror.npy')
+            # market_history = np.load(data_prefix + 'market_data.npy')
+            predict_data = pd.read_csv(data_prefix + 'KOSPI_stocks.csv')
+            predict_data['date'] = pd.to_datetime(predict_data['date'])
+            index_data = pd.read_csv(data_prefix + '^KS11.csv')
+            index_data['date'] = pd.to_datetime(index_data['date'])
+            market_history = np.array(index_data[['Open', 'High', 'Low', 'Close']])
+            val_idx = index_data[index_data['date'] < func_args.valid_period].index[-1]
+            test_idx = index_data[index_data['date'] <= func_args.test_period].index[-1]
+            logger.warning(f"test date -> {index_data.iloc[test_idx]['Date']}")
+            assert stocks_data.shape[:-1] == rate_of_return.shape, 'file size error'
+            A = torch.from_numpy(np.load(matrix_path)).float().to(func_args.device)
+            allow_short = True
+
 
         env = PortfolioEnv(assets_data=stocks_data, market_data=market_history, rtns_data=rate_of_return,predict_data=predict_data,
                            in_features=func_args.in_features, val_idx=val_idx, test_idx=test_idx,
@@ -163,11 +187,16 @@ def run(func_args):
             max_ARR = 0
             no_improve_epoch = 0
             MAX_NO_IMPROVE_EPOCH = 10
+            MIN_EPOCHS_BEFORE_RESET = 20
+            early_stopping = EarlyStopping(patience=10, verbose=True)
             for epoch in range(func_args.epochs):
                 # Train Step
                 epoch_return = 0
                 epoch_loss = 0
+                wandb.log({'epoch_step': epoch})
                 for j in range(mini_batch_num):
+                    if j ==24:
+                        print()
                     episode_return, avg_rho, avg_mdd, loss, rho_record_train = agent.train_episode()
                     epoch_return += episode_return
                     epoch_loss += loss
@@ -183,9 +212,7 @@ def run(func_args):
                 logger.warning(f'epoch({epoch}) loss -> {epoch_loss}')
                 avg_train_return = epoch_return / mini_batch_num
 
-                wandb_obj.log({'train/loss_epoch': epoch_loss, 
-                               'train/return_epoch': avg_train_return,
-                               'epoch_step': epoch})
+                wandb.log({'epoch_step': epoch, 'train/loss_epoch': epoch_loss, 'train/return_epoch': avg_train_return})
 
                 # Validation Step
                 agent_wealth,rho_record,weight_record,future_p = agent.evaluation()
@@ -202,31 +229,36 @@ def run(func_args):
                     if k == 'final_wealth':
                         wandb_obj.log({f'valid/{k}': agent_wealth[-1, -1],  'epoch_step': epoch})
 
+                early_stopping(metrics['ARR'][0], agent.actor, os.path.join(model_save_dir, 'best_arr.pkl'))
+
                 if metrics['ARR'] > max_ARR :
                     logger.warning(f'New Best ARR Policy in {epoch}!!!!')
                     no_improve_epoch = 0
                     invest_record = json.dumps(weight_record)
                     max_ARR = metrics['ARR']
-                    save_dict = {'model_state_dict': actor.state_dict(), 'epoch': epoch, 'loss': epoch_loss}
                     record_path = os.path.join(save_dir,'invest_record.json')
                     with open(record_path, 'w') as f:
                         json.dump(invest_record, f, indent=4)
-                    torch.save(save_dict, os.path.join(model_save_dir, 'best_arr.pkl'))
                 else:
                     no_improve_epoch +=1
-                if no_improve_epoch >= MAX_NO_IMPROVE_EPOCH and epoch < 50:
-                    logger.warning('!!!!!!!!!!!!!!!policy reset !!!!!!!!')
-                    agent.actor = RLActor(supports, func_args).to(func_args.device)
+
+                if early_stopping.early_stop:
+                    print("Early stopping")
+                    break
+
+                # if no_improve_epoch >= MAX_NO_IMPROVE_EPOCH and epoch >= MIN_EPOCHS_BEFORE_RESET :
+                #     logger.warning('!!!!!!!!!!!!!!!policy reset !!!!!!!!')
+                #     no_improve_epoch = 0
+                #     agent.actor = RLActor(supports, func_args).to(func_args.device)
 
         except KeyboardInterrupt:
             logger.warning('End of training...????')
-            save_dict = {'model_state_dict': actor.state_dict(), 'epoch': epoch, 'loss': epoch_loss}
-            torch.save(save_dict, os.path.join(model_save_dir, 'final_model.pkl'))
+            torch.save(agent.actor.state_dict(), os.path.join(model_save_dir, 'final_model.pkl'))
             torch.save(agent.optimizer.state_dict(), os.path.join(model_save_dir, 'final_optimizer.pkl'))
 
         #for test
         actor = RLActor(supports, func_args).to(func_args.device)  # define type of network
-        actor.load_state_dict(torch.load(os.path.join(model_save_dir, 'best_arr.pkl'))['model_state_dict'])
+        actor.load_state_dict(torch.load(os.path.join(model_save_dir, 'best_arr.pkl')))
         logger.warning("Successfully loaded best checkpoint...")
         agent = RLAgent(env, actor, func_args)
         agent_wealth, rho_record, weight_record, future_p = agent.evaluation('test')
@@ -269,14 +301,14 @@ if __name__ == '__main__':
 
     parser.add_argument('-c', '--config', type=str)
     parser.add_argument('--r', type=int, default=10)
-    parser.add_argument('--method', type=str, default='PRED_MSU')
+    parser.add_argument('--method', type=str, default='DEEP')
     parser.add_argument('--model',type=str,default='Fedformer')
-    parser.add_argument('--market', type=str, default='IXIC')
+    parser.add_argument('--market', type=str, default='DJIA')
     parser.add_argument('--train_type', type=str, default='Lora',
                         help='model name, options: [Lora,Frozen,Fine]')
     parser.add_argument('--window_len', type=int)
-    parser.add_argument('--valid_period',type=str,default='2004-10-15')
-    parser.add_argument('--test_period', type=str,default='2006-06-01')
+    parser.add_argument('--valid_period',type=str,default='2019-12-31') #2004-10-15,2019-12-31
+    parser.add_argument('--test_period', type=str,default='2020-12-31') #2006-06-01,2020-12-31
     parser.add_argument('--G', type=int)
     parser.add_argument('--batch_size', type=int)
     parser.add_argument('--seed', type=int, default=-1)

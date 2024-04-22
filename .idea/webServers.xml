@@ -3,14 +3,14 @@
   <component name="WebServers">
     <option name="servers">
       <webServer id="90919937-fa75-4118-800c-b1969cf18ae6" name="AAAI_rpower2">
-        <fileTransfer rootFolder="/home/jinkyu/AAAI" accessType="SFTP" host="163.152.163.176" port="22" sshConfigId="8be47213-e1cd-4431-81f9-d2e9b78007dc" sshConfig="jinkyu@163.152.163.176:22 password">
+        <fileTransfer rootFolder="/home/jinkyu/Deepclair" accessType="SFTP" host="163.152.163.176" port="22" sshConfigId="8be47213-e1cd-4431-81f9-d2e9b78007dc" sshConfig="jinkyu@163.152.163.176:22 password">
           <advancedOptions>
             <advancedOptions dataProtectionLevel="Private" keepAliveTimeout="0" passiveMode="true" shareSSLContext="true" />
           </advancedOptions>
         </fileTransfer>
       </webServer>
       <webServer id="87a3f713-f6f2-4357-91ac-cac3c7c07204" name="AAAI_rpower1">
-        <fileTransfer rootFolder="/home/jinkyu/AAAI" accessType="SFTP" host="163.152.163.111" port="22" sshConfigId="e92094d3-f3eb-48d8-827b-1c8dd560f117" sshConfig="jinkyu@163.152.163.111:22 password">
+        <fileTransfer rootFolder="/home/jinkyu/Deepclair" accessType="SFTP" host="163.152.163.111" port="22" sshConfigId="e92094d3-f3eb-48d8-827b-1c8dd560f117" sshConfig="jinkyu@163.152.163.111:22 password">
           <advancedOptions>
             <advancedOptions dataProtectionLevel="Private" passiveMode="true" shareSSLContext="true" />
           </advancedOptions>
